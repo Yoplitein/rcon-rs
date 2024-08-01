@@ -1,6 +1,6 @@
 #![allow(unused, non_snake_case)]
 
-use std::{borrow::Borrow, io::Write, time::Duration};
+use std::{io::{stdin, BufRead, Write}, time::Duration};
 
 use clap::Parser;
 use anyhow::{anyhow, Result as AResult};
@@ -33,18 +33,40 @@ enum Mode {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> AResult<()> {
     let args = Args::parse();
+    
+    #[cfg(debug_assertions)]
     dbg!(&args);
+    
+    macro_rules! inner_loop {
+        ($cmd:ident, $impl:tt) => {
+            if args.commands.is_empty() {
+                let (mut sender, mut receiver) = tokio::sync::mpsc::channel(16);
+                std::thread::spawn(move || {
+                    let mut stdin = stdin().lock();
+                    for line in stdin.lines() {
+                        sender.blocking_send(line);
+                    }
+                });
+                while let Some(Ok($cmd)) = receiver.recv().await {
+                    $impl
+                }
+            } else {
+                for $cmd in args.commands {
+                    $impl
+                }
+            }
+        };
+    }
     
     match args.mode {
         Mode::Goldsrc => {
             let sock = UdpSocket::bind("0.0.0.0:0").await?;
             sock.connect((args.host, args.port)).await?;
             let rcon = GoldsrcRcon::new(args.password, sock);
-            
-            for command in args.commands {
+            inner_loop!(command, {
                 let resp = rcon.send_command(&command).await?;
-                eprintln!("{resp}");
-            }
+                println!("{resp}");
+            });
         },
         Mode::Source => {
             todo!()
@@ -92,9 +114,7 @@ impl GoldsrcRcon {
                 }
                 trimBuf.len()
             };
-            if haveFirstChunk {
-                start += 1;
-            }
+            start += 1; // responses seem to always be prefixed with 'l'
             let end = 'end: {
                 for (i, v) in trimBuf.iter().copied().enumerate().rev() {
                     if v != 0x00 {
@@ -126,7 +146,6 @@ impl GoldsrcRcon {
         buf.extend([0xff; 4]);
         write!(&mut buf, "rcon {challenge} \"{}\" {command}\x00", self.password)?;
         let mut resp = self.send_raw(&buf).await?;
-        resp.remove(0); // command responses are prefixed with an `l`
         Ok(resp)
     }
 }
