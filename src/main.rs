@@ -1,10 +1,10 @@
 #![allow(unused, non_snake_case)]
 
-use std::{io::{stdin, BufRead, Write}, time::Duration};
+use std::{io::{self, stdin, BufRead, Write}, time::Duration};
 
 use clap::Parser;
 use anyhow::{anyhow, Result as AResult};
-use tokio::{net::UdpSocket, time::timeout};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpStream, UdpSocket}, time::timeout};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -69,7 +69,13 @@ async fn main() -> AResult<()> {
             });
         },
         Mode::Source => {
-            todo!()
+            let sock = TcpStream::connect((args.host, args.port)).await?;
+            let mut rcon = SourceRcon::new(sock);
+            rcon.login(&args.password).await?;
+            inner_loop!(command, {
+                let resp = rcon.send_command(&command).await?;
+                println!("{resp}");
+            });
         },
     }
     Ok(())
@@ -147,5 +153,97 @@ impl GoldsrcRcon {
         write!(&mut buf, "rcon {challenge} \"{}\" {command}\x00", self.password)?;
         let mut resp = self.send_raw(&buf).await?;
         Ok(resp)
+    }
+}
+
+struct SourceRcon {
+    socket: TcpStream,
+    id: i32,
+}
+
+impl SourceRcon {
+    pub fn new(socket: TcpStream) -> Self {
+        let mut this = Self {
+            socket,
+            id: 0,
+        };
+        this
+    }
+    
+    async fn send_packet(&mut self, ty: i32, body: &[u8]) -> AResult<i32> {
+        let id = self.id;
+        self.id += 1;
+        // eprintln!("send {id} {ty} {:?}", String::from_utf8_lossy(body));
+        
+        let len = 10 + body.len();
+        self.socket.write_i32_le(len as i32).await?;
+        self.socket.write_i32_le(id).await?;
+        self.socket.write_i32_le(ty).await?;
+        self.socket.write_all(body).await?;
+        self.socket.write_all(&[0, 0]).await?;
+        
+        Ok(id)
+    }
+    
+    async fn recv_packet(&mut self) -> AResult<(i32, i32, Vec<u8>)> {
+        // eprintln!("recv");
+        let len = self.socket.read_i32_le().await?;
+        // dbg!(len);
+        let id = self.socket.read_i32_le().await?;
+        // dbg!(id);
+        let ty = self.socket.read_i32_le().await?;
+        // dbg!(ty);
+        
+        let mut body = vec![0; (len - 10) as usize];
+        self.socket.read_exact(&mut body).await?;
+        
+        let mut trailing = [0; 2];
+        self.socket.read_exact(&mut trailing).await?;
+        
+        Ok((id, ty, body))
+    }
+    
+    pub async fn login(&mut self, password: &str) -> AResult<()> {
+        self.send_packet(3, password.as_bytes()).await?;
+        
+        // server first sends an empty response
+        let (id, ty, body) = self.recv_packet().await?;
+        if ty != 0 {
+            return Err(anyhow!("server sent unexpected packet during authentication"));
+        }
+        
+        // then sends authentication success packet
+        let (id, ty, body) = self.recv_packet().await?;
+        if ty != 2 {
+            return Err(anyhow!("server sent unexpected packet during authentication"));
+        }
+        if id == -1 {
+            return Err(anyhow!("authentication failed, bad password?"));
+        }
+        
+        Ok(())
+    }
+    
+    pub async fn send_command(&mut self, command: &str) -> AResult<String> {
+        let id = self.send_packet(2, command.as_bytes()).await?;
+        
+        // output may be split between several response packets, so we send a bogus packet
+        // that generates a reply arriving only after the final split packet has been received
+        let finishedId = self.send_packet(0, b"").await?;
+        
+        let mut response = String::new();
+        loop {
+            let resp = self.recv_packet().await?;
+            if resp.0 != id || resp.1 != 0 {
+                if resp.0 == finishedId {
+                    break;
+                } else {
+                    return Err(anyhow!("server sent unexpected response packet"));
+                }
+            }
+            response.push_str(&String::from_utf8_lossy(&resp.2));
+        }
+        
+        Ok(response)
     }
 }
