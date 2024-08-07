@@ -4,7 +4,7 @@ use std::{io::{self, stdin, BufRead, Write}, time::Duration};
 
 use clap::Parser;
 use anyhow::{anyhow, Result as AResult};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpStream, UdpSocket}, time::timeout};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt, BufStream}, net::{TcpStream, UdpSocket}, time::timeout};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -23,11 +23,11 @@ struct Args {
     commands: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum Mode {
     Goldsrc,
-    #[value(alias = "minecraft")]
     Source,
+    Minecraft,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -68,9 +68,9 @@ async fn main() -> AResult<()> {
                 println!("{resp}");
             });
         },
-        Mode::Source => {
+        Mode::Source | Mode::Minecraft => {
             let sock = TcpStream::connect((args.host, args.port)).await?;
-            let mut rcon = SourceRcon::new(sock);
+            let mut rcon = SourceRcon::new(sock, args.mode == Mode::Minecraft);
             rcon.login(&args.password).await?;
             inner_loop!(command, {
                 let resp = rcon.send_command(&command).await?;
@@ -157,15 +157,21 @@ impl GoldsrcRcon {
 }
 
 struct SourceRcon {
-    socket: TcpStream,
+    socket: BufStream<TcpStream>,
     id: i32,
+    minecraft: bool,
 }
 
 impl SourceRcon {
-    pub fn new(socket: TcpStream) -> Self {
+    pub fn new(socket: TcpStream, minecraft: bool) -> Self {
+        // this is required as Minecraft ignores commands if the entire packet isn't written at once >:|
+        // but it's also a minor perfomance win so *shrug*
+        let socket = BufStream::with_capacity(8192, 8192, socket);
+        
         let mut this = Self {
             socket,
             id: 0,
+            minecraft,
         };
         this
     }
@@ -173,7 +179,6 @@ impl SourceRcon {
     async fn send_packet(&mut self, ty: i32, body: &[u8]) -> AResult<i32> {
         let id = self.id;
         self.id += 1;
-        // eprintln!("send {id} {ty} {:?}", String::from_utf8_lossy(body));
         
         let len = 10 + body.len();
         self.socket.write_i32_le(len as i32).await?;
@@ -181,18 +186,15 @@ impl SourceRcon {
         self.socket.write_i32_le(ty).await?;
         self.socket.write_all(body).await?;
         self.socket.write_all(&[0, 0]).await?;
+        self.socket.flush().await?;
         
         Ok(id)
     }
     
     async fn recv_packet(&mut self) -> AResult<(i32, i32, Vec<u8>)> {
-        // eprintln!("recv");
         let len = self.socket.read_i32_le().await?;
-        // dbg!(len);
         let id = self.socket.read_i32_le().await?;
-        // dbg!(id);
         let ty = self.socket.read_i32_le().await?;
-        // dbg!(ty);
         
         let mut body = vec![0; (len - 10) as usize];
         self.socket.read_exact(&mut body).await?;
@@ -206,14 +208,16 @@ impl SourceRcon {
     pub async fn login(&mut self, password: &str) -> AResult<()> {
         self.send_packet(3, password.as_bytes()).await?;
         
-        // server first sends an empty response
-        let (id, ty, body) = self.recv_packet().await?;
-        if ty != 0 {
-            return Err(anyhow!("server sent unexpected packet during authentication"));
+        if !self.minecraft {
+            // Source first sends an empty response, then authentication response packet
+            // Minecraft elides this
+            let (_, ty, _) = self.recv_packet().await?;
+            if ty != 0 {
+                return Err(anyhow!("server sent unexpected packet during authentication"));
+            }
         }
         
-        // then sends authentication success packet
-        let (id, ty, body) = self.recv_packet().await?;
+        let (id, ty, _) = self.recv_packet().await?;
         if ty != 2 {
             return Err(anyhow!("server sent unexpected packet during authentication"));
         }
