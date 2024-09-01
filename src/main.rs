@@ -3,7 +3,7 @@
 use std::io::{self, stdin, BufRead, Write};
 use std::time::Duration;
 
-use anyhow::{anyhow, Result as AResult};
+use anyhow::{anyhow, Context, Result as AResult};
 use clap::Parser;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufStream};
 use tokio::net::{TcpStream, UdpSocket};
@@ -226,7 +226,9 @@ impl SourceRcon {
 		if !self.minecraft {
 			// Source first sends an empty response, then authentication response packet
 			// Minecraft elides this
-			let (_, ty, _) = self.recv_packet().await?;
+			let (_, ty, _) = timeout(Duration::from_secs(1), self.recv_packet())
+				.await
+				.context("timed out waiting for response from server")??;
 			if ty != 0 {
 				return Err(anyhow!(
 					"server sent unexpected packet during authentication"
@@ -234,7 +236,9 @@ impl SourceRcon {
 			}
 		}
 
-		let (id, ty, _) = self.recv_packet().await?;
+		let (id, ty, _) = timeout(Duration::from_secs(1), self.recv_packet())
+			.await
+			.context("timed out waiting for response from server")??;
 		if ty != 2 {
 			return Err(anyhow!(
 				"server sent unexpected packet during authentication"
@@ -257,7 +261,9 @@ impl SourceRcon {
 
 		let mut response = String::new();
 		loop {
-			let resp = self.recv_packet().await?;
+			let resp = timeout(Duration::from_secs(1), self.recv_packet())
+				.await
+				.context("timed out waiting for response from server")??;
 			if resp.0 != id || resp.1 != 0 {
 				if resp.0 == finishedId {
 					break;
