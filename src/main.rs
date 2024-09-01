@@ -41,7 +41,11 @@ async fn main() -> AResult<()> {
 	args.port.get_or_insert(match args.game {
 		Game::Goldsrc | Game::Source => 27015,
 		Game::Minecraft => 25575,
-		Game::Factorio => 0, // FIXME
+		Game::Factorio => {
+			return Err(anyhow!(
+				"Factorio has no default port, please specify the port your server uses"
+			))
+		},
 	});
 
 	#[cfg(debug_assertions)]
