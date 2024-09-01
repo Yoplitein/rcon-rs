@@ -21,13 +21,13 @@ struct Args {
 	password: String,
 
 	#[arg(short, long, default_value = "source")]
-	mode: Mode,
+	game: Game,
 
 	commands: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-enum Mode {
+enum Game {
 	Goldsrc,
 	Source,
 	Minecraft,
@@ -37,9 +37,9 @@ enum Mode {
 async fn main() -> AResult<()> {
 	let mut args = Args::parse();
 
-	args.port.get_or_insert(match args.mode {
-		Mode::Goldsrc | Mode::Source => 27015,
-		Mode::Minecraft => 25575,
+	args.port.get_or_insert(match args.game {
+		Game::Goldsrc | Game::Source => 27015,
+		Game::Minecraft => 25575,
 	});
 
 	#[cfg(debug_assertions)]
@@ -66,8 +66,8 @@ async fn main() -> AResult<()> {
 		};
 	}
 
-	match args.mode {
-		Mode::Goldsrc => {
+	match args.game {
+		Game::Goldsrc => {
 			let sock = UdpSocket::bind("0.0.0.0:0").await?;
 			sock.connect((args.host, args.port.unwrap())).await?;
 			let rcon = GoldsrcRcon::new(args.password, sock);
@@ -76,9 +76,9 @@ async fn main() -> AResult<()> {
 				println!("{resp}");
 			});
 		},
-		Mode::Source | Mode::Minecraft => {
+		Game::Source | Game::Minecraft => {
 			let sock = TcpStream::connect((args.host, args.port.unwrap())).await?;
-			let mut rcon = SourceRcon::new(sock, args.mode == Mode::Minecraft);
+			let mut rcon = SourceRcon::new(sock, args.game == Game::Minecraft);
 			rcon.login(&args.password).await?;
 			inner_loop!(command, {
 				let resp = rcon.send_command(&command).await?;
