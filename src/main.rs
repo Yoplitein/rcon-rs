@@ -1,6 +1,7 @@
-#![allow(unused, non_snake_case)]
+#![allow(unused, non_snake_case, non_upper_case_globals)]
 
 use std::io::{self, stdin, BufRead, Write};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result as AResult};
@@ -40,6 +41,15 @@ struct Args {
 	game: Game,
 
 	/**
+		Time (in seconds) to wait for a response from the server.
+
+		For GoldSrc, this also controls how long to wait for the entirety of a split response to
+		arrive, i.e. each command will take at least this much time to execute.
+	*/
+	#[arg(short, long, default_value = "1")]
+	timeout: f32,
+
+	/**
 		List of commands to execute.
 
 		Mind your shell's argument splitting!
@@ -55,6 +65,8 @@ enum Game {
 	Factorio,
 }
 
+static recvTimeout: OnceLock<Duration> = OnceLock::new();
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> AResult<()> {
 	let mut args = Args::parse();
@@ -68,6 +80,8 @@ async fn main() -> AResult<()> {
 			))
 		},
 	});
+
+	recvTimeout.set(Duration::from_secs_f32(args.timeout));
 
 	#[cfg(debug_assertions)]
 	dbg!(&args);
@@ -137,7 +151,10 @@ impl GoldsrcRcon {
 		let mut result = String::new();
 		let mut haveFirstChunk = false;
 		loop {
-			let len = match timeout(Duration::from_secs(1), self.socket.recv(&mut buf)).await {
+			let len = match timeout(*recvTimeout.get().unwrap(), self.socket.recv(&mut buf))
+				.await
+				.context("timed out waiting for response from server")
+			{
 				Ok(res) => res?,
 				Err(err) => {
 					if haveFirstChunk {
@@ -257,7 +274,7 @@ impl SourceRcon {
 		if matches!(self.game, Game::Source) {
 			// Source first sends an empty response, then authentication response packet
 			// Minecraft elides this
-			let (_, ty, _) = timeout(Duration::from_secs(1), self.recv_packet())
+			let (_, ty, _) = timeout(*recvTimeout.get().unwrap(), self.recv_packet())
 				.await
 				.context("timed out waiting for response from server")??;
 			if ty != 0 {
@@ -267,7 +284,7 @@ impl SourceRcon {
 			}
 		}
 
-		let (id, ty, _) = timeout(Duration::from_secs(1), self.recv_packet())
+		let (id, ty, _) = timeout(*recvTimeout.get().unwrap(), self.recv_packet())
 			.await
 			.context("timed out waiting for response from server")??;
 		if ty != 2 {
@@ -297,7 +314,7 @@ impl SourceRcon {
 
 		let mut response = String::new();
 		loop {
-			let resp = timeout(Duration::from_secs(1), self.recv_packet())
+			let resp = timeout(*recvTimeout.get().unwrap(), self.recv_packet())
 				.await
 				.context("timed out waiting for response from server")??;
 			if resp.0 != id || resp.1 != 0 {

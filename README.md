@@ -33,6 +33,14 @@ Options:
           [default: source]
           [possible values: goldsrc, source, minecraft, factorio]
 
+  -t, --timeout <TIMEOUT>
+          Time (in seconds) to wait for a response from the server.
+
+          For GoldSrc, this also controls how long to wait for the entirety of a split response to
+          arrive, i.e. each command will take at least this much time to execute.
+
+          [default: 1]
+
   -h, --help
           Print help (see a summary with '-h')
 ```
