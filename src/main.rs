@@ -9,20 +9,41 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufStream};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::timeout;
 
+/**
+	A remote console (RCON) client supporting GoldSrc, Source, Minecraft, and Factorio.
+*/
 #[derive(Debug, Parser)]
 struct Args {
+	/**
+		Hostname or address to connect to.
+
+		Note that you should avoid using RCON over the internet as there is no encryption.
+	*/
 	#[arg(short = 'H', long, default_value = "127.0.0.1")]
 	host: String,
 
+	/**
+		Port to connect on.
+
+		If unspecified will use the default for GoldSrc, Source, and Minecraft.
+		Factorio has no default and therefore must always be specified.
+	*/
 	#[arg(short = 'P', long)]
 	port: Option<u16>,
 
+	/// RCON password.
 	#[arg(short = 'p', long)]
 	password: String,
 
+	/// Game being connected to.
 	#[arg(short, long, default_value = "source")]
 	game: Game,
 
+	/**
+		List of commands to execute.
+
+		Mind your shell's argument splitting!
+	*/
 	commands: Vec<String>,
 }
 
