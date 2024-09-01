@@ -31,6 +31,7 @@ enum Game {
 	Goldsrc,
 	Source,
 	Minecraft,
+	Factorio,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -40,6 +41,7 @@ async fn main() -> AResult<()> {
 	args.port.get_or_insert(match args.game {
 		Game::Goldsrc | Game::Source => 27015,
 		Game::Minecraft => 25575,
+		Game::Factorio => 0, // FIXME
 	});
 
 	#[cfg(debug_assertions)]
@@ -73,16 +75,20 @@ async fn main() -> AResult<()> {
 			let rcon = GoldsrcRcon::new(args.password, sock);
 			inner_loop!(command, {
 				let resp = rcon.send_command(&command).await?;
-				println!("{resp}");
+				if !resp.is_empty() {
+					println!("{resp}");
+				}
 			});
 		},
-		Game::Source | Game::Minecraft => {
+		Game::Source | Game::Minecraft | Game::Factorio => {
 			let sock = TcpStream::connect((args.host, args.port.unwrap())).await?;
-			let mut rcon = SourceRcon::new(sock, args.game == Game::Minecraft);
+			let mut rcon = SourceRcon::new(sock, args.game);
 			rcon.login(&args.password).await?;
 			inner_loop!(command, {
 				let resp = rcon.send_command(&command).await?;
-				println!("{resp}");
+				if !resp.is_empty() {
+					println!("{resp}");
+				}
 			});
 		},
 	}
@@ -174,11 +180,11 @@ impl GoldsrcRcon {
 struct SourceRcon {
 	socket: BufStream<TcpStream>,
 	id: i32,
-	minecraft: bool,
+	game: Game,
 }
 
 impl SourceRcon {
-	pub fn new(socket: TcpStream, minecraft: bool) -> Self {
+	pub fn new(socket: TcpStream, game: Game) -> Self {
 		// this is required as Minecraft ignores commands if the entire packet isn't
 		// written at once >:| but it's also a minor perfomance win so *shrug*
 		let socket = BufStream::with_capacity(8192, 8192, socket);
@@ -186,7 +192,7 @@ impl SourceRcon {
 		let mut this = Self {
 			socket,
 			id: 0,
-			minecraft,
+			game,
 		};
 		this
 	}
@@ -223,7 +229,7 @@ impl SourceRcon {
 	pub async fn login(&mut self, password: &str) -> AResult<()> {
 		self.send_packet(3, password.as_bytes()).await?;
 
-		if !self.minecraft {
+		if matches!(self.game, Game::Source) {
 			// Source first sends an empty response, then authentication response packet
 			// Minecraft elides this
 			let (_, ty, _) = timeout(Duration::from_secs(1), self.recv_packet())
@@ -255,9 +261,14 @@ impl SourceRcon {
 		let id = self.send_packet(2, command.as_bytes()).await?;
 
 		// output may be split between several response packets, so we send a bogus
-		// packet that generates a reply arriving only after the final split packet
+		// packet that generates a reply which arrives only after the final split packet
 		// has been received
-		let finishedId = self.send_packet(0, b"").await?;
+		let finishedId = if matches!(self.game, Game::Factorio) {
+			self.send_packet(2, b"/bogus")
+		} else {
+			self.send_packet(0, b"")
+		}
+		.await?;
 
 		let mut response = String::new();
 		loop {
@@ -273,6 +284,9 @@ impl SourceRcon {
 			}
 			response.push_str(&String::from_utf8_lossy(&resp.2));
 		}
+
+		let trimmed = response.trim_end();
+		response.drain(trimmed.len() ..);
 
 		Ok(response)
 	}
