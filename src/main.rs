@@ -10,10 +10,10 @@ use tokio::{io::{AsyncReadExt, AsyncWriteExt, BufStream}, net::{TcpStream, UdpSo
 struct Args {
     #[arg(short = 'H', long, default_value = "127.0.0.1")]
     host: String,
-    
-    #[arg(short = 'P', long, default_value = "27015")]
-    port: u16,
-    
+
+    #[arg(short = 'P', long)]
+    port: Option<u16>,
+
     #[arg(short = 'p', long)]
     password: String,
     
@@ -32,8 +32,13 @@ enum Mode {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> AResult<()> {
-    let args = Args::parse();
-    
+    let mut args = Args::parse();
+
+    args.port.get_or_insert(match args.mode {
+        Mode::Goldsrc | Mode::Source => 27015,
+        Mode::Minecraft => 25575,
+    });
+
     #[cfg(debug_assertions)]
     dbg!(&args);
     
@@ -61,7 +66,7 @@ async fn main() -> AResult<()> {
     match args.mode {
         Mode::Goldsrc => {
             let sock = UdpSocket::bind("0.0.0.0:0").await?;
-            sock.connect((args.host, args.port)).await?;
+            sock.connect((args.host, args.port.unwrap())).await?;
             let rcon = GoldsrcRcon::new(args.password, sock);
             inner_loop!(command, {
                 let resp = rcon.send_command(&command).await?;
@@ -69,7 +74,7 @@ async fn main() -> AResult<()> {
             });
         },
         Mode::Source | Mode::Minecraft => {
-            let sock = TcpStream::connect((args.host, args.port)).await?;
+            let sock = TcpStream::connect((args.host, args.port.unwrap())).await?;
             let mut rcon = SourceRcon::new(sock, args.mode == Mode::Minecraft);
             rcon.login(&args.password).await?;
             inner_loop!(command, {
