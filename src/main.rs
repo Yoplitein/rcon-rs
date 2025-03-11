@@ -71,15 +71,18 @@ static recvTimeout: OnceLock<Duration> = OnceLock::new();
 async fn main() -> AResult<()> {
 	let mut args = Args::parse();
 
-	args.port.get_or_insert(match args.game {
-		Game::Goldsrc | Game::Source => 27015,
-		Game::Minecraft => 25575,
-		Game::Factorio => {
-			return Err(anyhow!(
-				"Factorio has no default port, please specify the port your server uses"
-			))
-		},
-	});
+	args.port = match args.port {
+		None => Some(match args.game {
+			Game::Goldsrc | Game::Source => 27015,
+			Game::Minecraft => 25575,
+			Game::Factorio => {
+				return Err(anyhow!(
+					"Factorio has no default port, please specify the port your server uses"
+				))
+			},
+		}),
+		v => v,
+	};
 
 	recvTimeout.set(Duration::from_secs_f32(args.timeout));
 
